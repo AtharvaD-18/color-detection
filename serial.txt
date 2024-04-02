@@ -1,0 +1,241 @@
+#include <TinyGPS++.h>
+#include <SoftwareSerial.h>
+#include <EEPROM.h>
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+
+//defining variables
+
+float gps_lat;                             //current latitude values
+float gps_long;                            //current longitude values
+//char c;
+byte character = 0;
+
+float Latarray[100] = {};           //Array for storing latitude coordinates
+float Longarray[100] = {};          //Array for storing longitude coordinates
+//float onesandzerostring[100] = {};  //Array for storing 1's and 0's received from rpi
+
+int n = 0;                          //counter for no. of instances in 1s and 0s array
+int itr = 0;
+int cntr=0;
+
+float lattotal = 0;                 //Value of  latitude after summing all latitude values  from that iteration
+float longtotal = 0;                //Average Value of  all latitude coordinates in that iteration
+float lataverage = 0;               //Value of  longitude after summing all latitude values  from that iteration
+float longaverage = 0;              //Average Value of  all longitude coordinates in that iteration
+float pwlat;                       //current latitude average
+float pwlong;
+float pwlongtotal;
+float pwlattotal;
+float pwlatavg;
+float pwlongavg;
+int wtotal = 0;
+
+//nrf part 
+
+RF24 radio(7,8);
+const byte address[6] = "00001";
+float nrfArray[2];
+
+static const int RXPin = 4, TXPin = 3;   //pin 3 declared as TX and 4 as RX using software serial
+static const uint32_t GPSBaud = 9600;    // Set baud rate for communication with GPS
+
+// The TinyGPS++ object
+TinyGPSPlus gps;
+
+// The serial connection to the GPS device
+SoftwareSerial ss(RXPin, TXPin);
+
+void setup() {
+  // put your setup code here, to run once:
+Serial.begin(115200);     // baud rate
+ss.begin(GPSBaud);
+
+Serial.println(F("ONYX Image Processing"));
+Serial.println();
+
+for (int i = 0; i < 100; i++) {
+    Latarray[i] = 0; // declare Latarray filled with 0s
+  }
+for (int i = 0; i < 100; i++) {
+    Longarray[i] = 0; // declare Longarray filled with 0s
+  }
+
+//eeprom part
+
+  for(int i=0;i<255;i++){
+  float ee = EEPROM.read(i); 
+  Serial.println("EEPROM DATA");
+  Serial.println(ee,10);
+  }
+
+  //nrf part
+ radio.begin();
+ radio.openWritingPipe(address);
+ radio.setPALevel(RF24_PA_MIN);
+ radio.stopListening();
+
+}
+
+void loop() {
+  // put your main code here,to run repeatedly:
+
+  if (Serial.available()) {
+    Serial.println("Loop1");
+    character = Serial.read();         //read character from rpi
+
+    int intchar = (int)character;      //convert the character to integer
+    //Serial.println(intchar);
+   
+   while (ss.available() > 0) {     //Read latitude and longitude values from the GPS
+        if (gps.encode(ss.read()))
+        {displayInfo();              // calling the displayInfo function
+          //Serial.print("Working");
+        }
+      }
+  if (intchar == 49) {                   // If we receive 1. ie object is inside ROC
+
+        n++;
+      Serial.println("Recieved 1");
+      digitalWrite(LED_BUILTIN, HIGH);
+   
+ 
+      Latarray[n] = gps_lat ;        //insert the new gps latitude value in the Latitude array for every instance when object is inside the ROC
+
+      Longarray[n] = gps_long;       //insert the new gps Longitude value in the Longitude array for every instance when object is inside the ROC
+
+
+    }
+
+  if (intchar == 48) {                    // If we receive 0. ie object is outside ROC
+
+      Serial.println("Recieved 0");
+      digitalWrite(LED_BUILTIN, LOW);
+
+      int finalpos = n;                    //number of 1s in the 1s and 0s array. ie. the number of instances for which object was inside the ROC
+     
+      Serial.print("FinalPOS : ");
+      Serial.println(finalpos);  
+
+      if (finalpos > 2) {
+
+      for (int i = 1; i <= finalpos; i++) {    //continuously add values to a latitude total and longitude total to calculate the average
+            lattotal = lattotal + Latarray[i];
+            longtotal = longtotal + Longarray[i];
+          }
+      Serial.print("Epoch number  : ");
+      Serial.println(itr+1);
+      itr++;
+
+//      for(int i=1;  i <= finalpos ; i++){Serial.println("LATARRAY");Serial.println(Latarray[i],10);}
+//      for(int i=1;  i <= finalpos ; i++){Serial.println("LONGARRAY");Serial.println(Longarray[i],10);}
+      Serial.print("Long total : ");
+      Serial.println(longtotal, 10);
+      longaverage = longtotal / (finalpos);   //calculate the average of all the longitude values received in an iteration
+      Serial.print("Long average : ");
+      Serial.println(longaverage, 10);
+
+      EEPROM.write(cntr, longaverage); //1-50 EEPROM long avg
+      
+      pwlong = longaverage * (finalpos);
+      pwlongtotal = pwlongtotal + pwlong;
+      wtotal = wtotal + finalpos;
+      pwlongavg = pwlongtotal / (wtotal);  //weighted longitude average of that iteration
+      Serial.print("W total");
+      Serial.println(wtotal);
+      Serial.print("Weighted Avg Long : ");
+      Serial.println(pwlongavg, 10);
+
+      EEPROM.write(cntr+100, pwlongavg); //100-150 EEPROM wt. long avg
+
+      Serial.print("Lat total : ");
+      Serial.println(lattotal, 10);
+      lataverage = lattotal / (finalpos);  //calculate the average of all the latitude values received in an iteration
+      Serial.print("Lat average : ");
+      Serial.println(lataverage, 10);
+
+      EEPROM.write(cntr+50, lataverage); //50-100 EEPROM lat avg
+      
+      pwlat = lataverage * (finalpos);
+      pwlattotal = pwlattotal + pwlat;
+      pwlatavg = pwlattotal / (wtotal); //weighted latitude average of that iteration 
+      Serial.print("Weighted Avg Lat :  ");
+      Serial.println(pwlatavg, 10);
+
+      EEPROM.write(cntr+150, pwlatavg); //100-150 EEPROM wt. lat avg
+
+      EEPROM.write(cntr+200, finalpos); //150-200 EEPROM final position
+
+      cntr++;
+
+          if(pwlatavg-lataverage<0.00002 && pwlatavg-lataverage>-0.00002 && pwlongavg-longaverage<0.00002 && pwlongavg-longaverage>-0.00002 && itr>1){
+              Serial.println();
+              Serial.println("WOAH WOAH WOAH");
+              Serial.println("THIS IS THE FINAL LAT AND LONG");
+              Serial.print(pwlatavg,10);
+              Serial.println(" , ");
+              Serial.print(pwlongavg,10);
+
+              sendValue(); //nrf part
+              
+              while(true){}
+              
+          }
+      
+      }
+
+      else {
+        Serial.println("Insufficient ones");   //insufficient instances
+      }
+
+     //Clear all array and variables
+
+     for (int i = 0; i < 100; i++) {
+        Latarray[i] = 0;
+      }
+     for (int i = 0; i < 100; i++) {
+        Longarray[i] = 0;
+      }
+
+
+      lattotal = 0;
+      longtotal = 0;
+     
+      n = 0;
+
+      lataverage = 0;
+      longaverage = 0;
+         
+      }
+
+     
+  }
+
+  }
+ 
+
+void displayInfo()               //Function to read and store coordinates from the GPS module
+{
+  Serial.print(F("Location: "));
+
+  Serial.print(gps.location.lat(), 10);
+  Serial.print(F(","));
+  Serial.print(gps.location.lng(), 10);
+
+  // Store the current lat and long values in variables
+  gps_lat = gps.location.lat();
+  gps_long =  gps.location.lng();
+
+  Serial.println();
+}
+
+void sendValue() {                         // Function to send value via NRF to PADA
+
+ nrfArray[0] = pwlatavg; 
+ nrfArray[1] = pwlongavg;
+
+ radio.write(&nrfArray, sizeof(nrfArray));
+ Serial.println("Sending");
+ delay(20);
+}
